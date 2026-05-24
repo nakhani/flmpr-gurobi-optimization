@@ -6,28 +6,37 @@ from model_milp import solve_milp1, solve_milp2, solve_milp3, print_solution
 
 def run_small_test():
 
-    # data = generate_instance(
-    #     n_customers=10,
-    #     n_facilities=4,
-    #     n_price_levels=20,
-    #     seed=42,
-    #     fixed_cost=100,
-    #     lambda_budget=1.5,
-    # ) 4 * 20 = 80 options
+#     data = generate_instance(
+#         n_customers=10,
+#         n_facilities=4,
+#         n_price_levels=20,
+#         seed=42,
+#         fixed_cost=100,
+#        lambda_budget=1.5,
+#        ) 4 * 20 = 80 options
     """
     Model too large for size-limited license and
     MILP-2 contains up to O(|I|·|Γ|·|Γ|) constraints.
 
     """
 
+#     data = generate_instance(
+#         n_customers=5,
+#         n_facilities=3,
+#         n_price_levels=10,
+#         seed=42,
+#         fixed_cost=100,
+#         lambda_budget=1.5,
+#    ) # 3 * 10 = 30 options
+    
     data = generate_instance(
-        n_customers=5,
-        n_facilities=3,
-        n_price_levels=10,
-        seed=42,
-        fixed_cost=100,
-        lambda_budget=1.5,
-   ) # 3 * 10 = 30 options
+    n_customers=3,
+    n_facilities=2,
+    n_price_levels=5,
+    seed=42,
+    fixed_cost=50,
+    lambda_budget=1.5,
+    )
 
     models = [
         ("MILP-1", solve_milp1),

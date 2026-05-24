@@ -73,40 +73,7 @@ def _solve_milp(
     mip_gap: float | None = None,
     verbose: bool = True,
 ) -> SolutionDict:
-    """
-    Build and solve one of the MILP formulations.
 
-    Decision variables
-    ------------------
-    w[j] = 1 if facility j is opened, 0 otherwise.
-    x[j,k] = 1 if facility j is opened with price level k, 0 otherwise.
-    y[i,j,k] = 1 if customer i chooses facility j with price level k, 0 otherwise.
-
-    Objective
-    ---------
-    Maximize total profit:
-        revenue from served customers - fixed cost of opened facilities
-
-    Common constraints
-    ------------------
-    1. sum_k x[j,k] = w[j]
-    2. sum_j,k y[i,j,k] <= 1
-    3. y[i,j,k] <= x[j,k]
-    4. y[i,j,k] = 0 if theta[i,j,k] > budget[i]
-
-    Formulation-specific constraints
-    --------------------------------
-    MILP-1:
-        sum_(m,n) theta[i,m,n] * y[i,m,n]
-        <= theta[i,j,k] * x[j,k] + budget[i] * (1 - x[j,k])
-
-    MILP-2:
-        y[i,m,n] <= 1 - x[j,k]
-        for all options (m,n), (j,k) where theta[i,m,n] > theta[i,j,k]
-
-    MILP-3:
-        sum over more expensive options y[i,m,n] <= 1 - x[j,k]
-    """
 
     if formulation not in {"milp1", "milp2", "milp3"}:
         raise ValueError(f"Unknown formulation: {formulation}")
@@ -129,8 +96,11 @@ def _solve_milp(
 
 
     # Decision variables
+    # w[j] = 1 if facility j is opened, 0 otherwise
     w = model.addVars(J, vtype=GRB.BINARY, name="w")
+    # x[j,k] = 1 if facility j is opened with price level k, 0 otherwise
     x = model.addVars(options, vtype=GRB.BINARY, name="x")
+    # y[i,j,k] = 1 if customer i chooses facility j with price level k, 0 otherwise
     y = model.addVars(
         [(i, j, k) for i in I for (j, k) in options],
         vtype=GRB.BINARY,
@@ -139,6 +109,7 @@ def _solve_milp(
 
 
     # Objective function
+    # Max Total Profit = Total Revenue - Total Opening Cost
     revenue = gp.quicksum(
         data.demand[i] * data.price[j, k] * y[i, j, k]
         for i in I
@@ -222,15 +193,9 @@ def _solve_milp(
 # MILP-1 constraints
 def _add_milp1_constraints(model, data: FLMPrData, I, options, x, y) -> None:
     """
-    Add MILP-1 closest assignment constraints.
+    If option (j,k) is open, the chosen option for customer i 
+    must have total cost no greater than theta[i,j,k]
 
-    For each customer i and option (j,k):
-        sum_(m,n) theta[i,m,n] * y[i,m,n]
-        <= theta[i,j,k] * x[j,k] + budget[i] * (1 - x[j,k])
-
-    Idea:
-    If option (j,k) is open, the chosen option for customer i must have
-    total cost no greater than theta[i,j,k].
     """
     for i in I:
         for (j, k) in options:
@@ -249,14 +214,9 @@ def _add_milp1_constraints(model, data: FLMPrData, I, options, x, y) -> None:
 # MILP-2 constraints
 def _add_milp2_constraints(model, data: FLMPrData, I, options, x, y) -> None:
     """
-    Add MILP-2 closest assignment constraints.
-
-    For each customer i:
     If option (m,n) is more expensive than option (j,k), then customer i
-    cannot choose (m,n) when option (j,k) is open.
+    cannot choose (m,n) when option (j,k) is open
 
-        y[i,m,n] <= 1 - x[j,k]
-        if theta[i,m,n] > theta[i,j,k]
     """
     for i in I:
         for (m, n) in options:
@@ -272,14 +232,9 @@ def _add_milp2_constraints(model, data: FLMPrData, I, options, x, y) -> None:
 # MILP-3 constraints
 def _add_milp3_constraints(model, data: FLMPrData, I, options, x, y) -> None:
     """
-    Add MILP-3 closest assignment constraints.
-
-    For each customer i and option (j,k):
     If option (j,k) is open, then all options with higher total cost
-    cannot be chosen by customer i.
+    cannot be chosen by customer i
 
-        sum_{(m,n): theta[i,m,n] > theta[i,j,k]} y[i,m,n]
-        <= 1 - x[j,k]
     """
     for i in I:
         for (j, k) in options:

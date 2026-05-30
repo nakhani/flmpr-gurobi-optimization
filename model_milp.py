@@ -108,8 +108,7 @@ def _solve_milp(
     )
 
 
-    # Objective function
-    # Max Total Profit = Total Revenue - Total Opening Cost
+    # Objective: revenue - opening cost
     revenue = gp.quicksum(
         data.demand[i] * data.price[j, k] * y[i, j, k]
         for i in I
@@ -124,7 +123,7 @@ def _solve_milp(
     model.setObjective(revenue - opening_cost, GRB.MAXIMIZE)
 
  
-    # Common Constraint 1:
+    # Constraint 1:
     # If facility j is open, exactly one price level is selected.
     # If facility j is closed, no price level is selected.
     for j in J:
@@ -134,7 +133,7 @@ def _solve_milp(
         )
 
    
-    # Common Constraint 2:
+    # Constraint 2:
     # Each customer chooses at most one facility-price option.
     for i in I:
         model.addConstr(
@@ -143,7 +142,7 @@ def _solve_milp(
         )
 
   
-    # Common Constraint 3:
+    # Constraint 3:
     # A customer can choose option (j,k) only if option (j,k) is open.
     for i in I:
         for (j, k) in options:
@@ -153,7 +152,7 @@ def _solve_milp(
             )
 
    
-    # Common Constraint 4:
+    # Constraint 4:
     # If theta_ijk > budget_i, customer i cannot choose option (j,k).
     for i in I:
         for (j, k) in options:

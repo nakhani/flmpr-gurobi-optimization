@@ -7,6 +7,7 @@ from gurobipy import GurobiError
 
 from data import generate_instance
 from model_milp import solve_milp1, solve_milp3
+from model_bbc import solve_bbc
 
 
 RESULTS_FILE = Path("scalability_results.csv")
@@ -20,7 +21,6 @@ def run_scalability_analysis():
         (10, 4, 10),
         (15, 5, 10),
         (20, 6, 10),
-        (25, 7, 10),
     ]
 
     results = []
@@ -42,10 +42,17 @@ def run_scalability_analysis():
             lambda_budget=1.5,
         )
 
-        models = [
-            ("MILP-1", solve_milp1),
-            ("MILP-3", solve_milp3),
-        ]
+        n_options = n_facilities * n_price_levels
+
+        models = []
+
+        # MILP-1 is included only for smaller instances
+        if n_options <= 50:
+            models.append(("MILP-1", solve_milp1))
+
+        # MILP-3 and BBC are tested for all instance sizes
+        models.append(("MILP-3", solve_milp3))
+        models.append(("BBC", solve_bbc))
 
         for model_name, solver in models:
             print(f"\nRunning {model_name}...")
@@ -63,7 +70,7 @@ def run_scalability_analysis():
                     "n_customers": n_customers,
                     "n_facilities": n_facilities,
                     "n_price_levels": n_price_levels,
-                    "n_options": n_facilities * n_price_levels,
+                    "n_options": n_options,
                     "status": result["status"],
                     "objective": result["objective"],
                     "runtime": result["runtime"],
@@ -72,6 +79,7 @@ def run_scalability_analysis():
                     "served_demand": result["served_demand"],
                     "total_revenue": result["total_revenue"],
                     "total_opening_cost": result["total_opening_cost"],
+                    "lazy_cuts_added": result.get("lazy_cuts_added", ""),
                 }
 
                 results.append(row)
@@ -80,7 +88,8 @@ def run_scalability_analysis():
                     f"{model_name}: objective={row['objective']}, "
                     f"runtime={row['runtime']:.4f}s, "
                     f"gap={row['mip_gap']}, "
-                    f"opened={row['opened_facilities']}"
+                    f"opened={row['opened_facilities']}, "
+                    f"lazy cuts={row['lazy_cuts_added']}"
                 )
 
             except GurobiError as error:

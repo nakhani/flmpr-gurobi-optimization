@@ -1,7 +1,5 @@
 # model_milp.py (MILP1, MILP2, MILP3 formulations)
 
-
-
 from typing import Dict, Tuple, Any, List, Literal
 import time
 
@@ -15,14 +13,13 @@ SolutionDict = Dict[str, Any]
 FormulationName = Literal["milp1", "milp2", "milp3"]
 
 
-# Solver functions 
+# Solver functions
 def solve_milp1(
     data: FLMPrData,
     time_limit: float | None = None,
     mip_gap: float | None = None,
     verbose: bool = True,
 ) -> SolutionDict:
-    
     return _solve_milp(
         data=data,
         formulation="milp1",
@@ -38,7 +35,6 @@ def solve_milp2(
     mip_gap: float | None = None,
     verbose: bool = True,
 ) -> SolutionDict:
-    
     return _solve_milp(
         data=data,
         formulation="milp2",
@@ -54,7 +50,6 @@ def solve_milp3(
     mip_gap: float | None = None,
     verbose: bool = True,
 ) -> SolutionDict:
-    
     return _solve_milp(
         data=data,
         formulation="milp3",
@@ -62,7 +57,6 @@ def solve_milp3(
         mip_gap=mip_gap,
         verbose=verbose,
     )
-
 
 
 # Main MILP Solver
@@ -73,7 +67,6 @@ def _solve_milp(
     mip_gap: float | None = None,
     verbose: bool = True,
 ) -> SolutionDict:
-
 
     if formulation not in {"milp1", "milp2", "milp3"}:
         raise ValueError(f"Unknown formulation: {formulation}")
@@ -94,19 +87,14 @@ def _solve_milp(
     # Gamma = all facility-price options: (j, k)
     options: List[Tuple[int, int]] = [(j, k) for j in J for k in K[j]]
 
-
     # Decision variables
-    # w[j] = 1 if facility j is opened, 0 otherwise
     w = model.addVars(J, vtype=GRB.BINARY, name="w")
-    # x[j,k] = 1 if facility j is opened with price level k, 0 otherwise
     x = model.addVars(options, vtype=GRB.BINARY, name="x")
-    # y[i,j,k] = 1 if customer i chooses facility j with price level k, 0 otherwise
     y = model.addVars(
         [(i, j, k) for i in I for (j, k) in options],
         vtype=GRB.BINARY,
         name="y",
     )
-
 
     # Objective: revenue - opening cost
     revenue = gp.quicksum(
@@ -122,28 +110,21 @@ def _solve_milp(
 
     model.setObjective(revenue - opening_cost, GRB.MAXIMIZE)
 
- 
-    # Constraint 1:
-    # If facility j is open, exactly one price level is selected.
-    # If facility j is closed, no price level is selected.
+    # Constraint 1: exactly one price if facility is open
     for j in J:
         model.addConstr(
             gp.quicksum(x[j, k] for k in K[j]) == w[j],
             name=f"one_price_if_open[{j}]",
         )
 
-   
-    # Constraint 2:
-    # Each customer chooses at most one facility-price option.
+    # Constraint 2: each customer chooses at most one option
     for i in I:
         model.addConstr(
             gp.quicksum(y[i, j, k] for (j, k) in options) <= 1,
             name=f"at_most_one_option[{i}]",
         )
 
-  
-    # Constraint 3:
-    # A customer can choose option (j,k) only if option (j,k) is open.
+    # Constraint 3: customer can choose only open option
     for i in I:
         for (j, k) in options:
             model.addConstr(
@@ -151,9 +132,7 @@ def _solve_milp(
                 name=f"choose_only_if_open[{i},{j},{k}]",
             )
 
-   
-    # Constraint 4:
-    # If theta_ijk > budget_i, customer i cannot choose option (j,k).
+    # Constraint 4: budget feasibility
     for i in I:
         for (j, k) in options:
             if data.theta[i, j, k] > data.budget[i]:
@@ -162,8 +141,7 @@ def _solve_milp(
                     name=f"budget_cut[{i},{j},{k}]",
                 )
 
-  
-   
+    # Formulation-specific CAC constraints
     if formulation == "milp1":
         _add_milp1_constraints(model, data, I, options, x, y)
     elif formulation == "milp2":
@@ -171,7 +149,6 @@ def _solve_milp(
     elif formulation == "milp3":
         _add_milp3_constraints(model, data, I, options, x, y)
 
-    
     # Optimize
     start_time = time.time()
     model.optimize()
@@ -188,14 +165,8 @@ def _solve_milp(
     )
 
 
-
 # MILP-1 constraints
 def _add_milp1_constraints(model, data: FLMPrData, I, options, x, y) -> None:
-    """
-    If option (j,k) is open, the chosen option for customer i 
-    must have total cost no greater than theta[i,j,k]
-
-    """
     for i in I:
         for (j, k) in options:
             model.addConstr(
@@ -209,14 +180,8 @@ def _add_milp1_constraints(model, data: FLMPrData, I, options, x, y) -> None:
             )
 
 
-
 # MILP-2 constraints
 def _add_milp2_constraints(model, data: FLMPrData, I, options, x, y) -> None:
-    """
-    If option (m,n) is more expensive than option (j,k), then customer i
-    cannot choose (m,n) when option (j,k) is open
-
-    """
     for i in I:
         for (m, n) in options:
             for (j, k) in options:
@@ -227,14 +192,8 @@ def _add_milp2_constraints(model, data: FLMPrData, I, options, x, y) -> None:
                     )
 
 
-
 # MILP-3 constraints
 def _add_milp3_constraints(model, data: FLMPrData, I, options, x, y) -> None:
-    """
-    If option (j,k) is open, then all options with higher total cost
-    cannot be chosen by customer i
-
-    """
     for i in I:
         for (j, k) in options:
             more_expensive_options = [
@@ -245,11 +204,13 @@ def _add_milp3_constraints(model, data: FLMPrData, I, options, x, y) -> None:
 
             if more_expensive_options:
                 model.addConstr(
-                    gp.quicksum(y[i, m, n] for (m, n) in more_expensive_options)
+                    gp.quicksum(
+                        y[i, m, n]
+                        for (m, n) in more_expensive_options
+                    )
                     <= 1 - x[j, k],
                     name=f"milp3_cac[{i},{j},{k}]",
                 )
-
 
 
 # Extract solution
@@ -262,7 +223,6 @@ def _extract_solution(
     y,
     runtime: float,
 ) -> SolutionDict:
-    
 
     result: SolutionDict = {
         "formulation": formulation,
@@ -274,8 +234,15 @@ def _extract_solution(
         "selected_prices": {},
         "assignments": {},
         "served_demand": 0.0,
+        "served_customers": 0,
         "total_revenue": 0.0,
         "total_opening_cost": 0.0,
+        "node_count": model.NodeCount,
+        "best_bound": model.ObjBound,
+        "num_vars": model.NumVars,
+        "num_constraints": model.NumConstrs,
+        "base_constraints": model.NumConstrs,
+        "effective_constraints": model.NumConstrs,
     }
 
     if model.SolCount == 0:
@@ -319,8 +286,16 @@ def _extract_solution(
                     result["served_demand"] += data.demand[i]
                     result["total_revenue"] += revenue
 
-    return result
+    result["served_customers"] = sum(
+        any(
+            y[i, j, k].X > 0.5
+            for j in data.facilities
+            for k in data.price_levels[j]
+        )
+        for i in data.customers
+    )
 
+    return result
 
 
 # Print solution
@@ -333,6 +308,10 @@ def print_solution(result: SolutionDict) -> None:
     print(f"Objective: {result['objective']}")
     print(f"Runtime: {result['runtime']:.4f} seconds")
     print(f"MIP gap: {result['mip_gap']}")
+    print(f"Node count: {result['node_count']}")
+    print(f"Best bound: {result['best_bound']}")
+    print(f"Variables: {result['num_vars']}")
+    print(f"Constraints: {result['num_constraints']}")
 
     print("\nOpened facilities:")
     print(result["opened_facilities"])
@@ -363,3 +342,4 @@ def print_solution(result: SolutionDict) -> None:
     print(f"  Total revenue: {result['total_revenue']:.2f}")
     print(f"  Total opening cost: {result['total_opening_cost']:.2f}")
     print(f"  Served demand: {result['served_demand']:.2f}")
+    print(f"  Served customers: {result['served_customers']}")

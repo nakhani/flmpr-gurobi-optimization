@@ -1,6 +1,5 @@
 # model_bbc.py (BBC formulation)
 
-
 from typing import Dict, Tuple, Any, List
 import time
 
@@ -13,17 +12,22 @@ from data import FLMPrData
 SolutionDict = Dict[str, Any]
 
 
-# Solver function
 def solve_bbc(
     data: FLMPrData,
     time_limit: float | None = None,
     mip_gap: float | None = None,
     verbose: bool = True,
+    use_cuts: bool = True,
+    force_open: bool = False,
 ) -> SolutionDict:
 
     model = gp.Model("FLMPr_BBC")
     model.Params.OutputFlag = 1 if verbose else 0
-    model.Params.LazyConstraints = 1
+
+    if use_cuts:
+        model.Params.LazyConstraints = 1
+    else:
+        model.Params.LazyConstraints = 0
 
     if time_limit is not None:
         model.Params.TimeLimit = time_limit
@@ -36,22 +40,24 @@ def solve_bbc(
     K = data.price_levels
 
     # Gamma = all facility-price options: (j, k)
-    options: List[Tuple[int, int]] = [(j, k) for j in J for k in K[j]]
+    options: List[Tuple[int, int]] = [
+        (j, k)
+        for j in J
+        for k in K[j]
+    ]
 
-    # Surplus values used in BBC cuts: pi_ijk = budget_i - theta_ijk
+    # Surplus: pi_ijk = budget_i - theta_ijk
     surplus = {
         (i, j, k): data.budget[i] - data.theta[i, j, k]
         for i in I
         for (j, k) in options
     }
 
-
     # Decision variables
-    # w[j] = 1 if facility j is opened, 0 otherwise
     w = model.addVars(J, vtype=GRB.BINARY, name="w")
-    # x[j,k] = 1 if facility j is opened with price level k, 0 otherwise
     x = model.addVars(options, vtype=GRB.BINARY, name="x")
-    # y[i,j,k] = customer assignment variable; relaxed in BBC
+
+    # In BBC, y is relaxed to continuous in [0,1]
     y = model.addVars(
         [(i, j, k) for i in I for (j, k) in options],
         vtype=GRB.CONTINUOUS,
@@ -59,7 +65,6 @@ def solve_bbc(
         ub=1.0,
         name="y",
     )
-
 
     # Objective: revenue - opening cost
     revenue = gp.quicksum(
@@ -75,16 +80,13 @@ def solve_bbc(
 
     model.setObjective(revenue - opening_cost, GRB.MAXIMIZE)
 
-
     # Constraint 1:
     # If facility j is open, exactly one price level is selected.
-    # If facility j is closed, no price level is selected.
     for j in J:
         model.addConstr(
             gp.quicksum(x[j, k] for k in K[j]) == w[j],
             name=f"one_price_if_open[{j}]",
         )
-
 
     # Constraint 2:
     # Each customer chooses at most one facility-price option.
@@ -94,7 +96,6 @@ def solve_bbc(
             name=f"at_most_one_option[{i}]",
         )
 
-
     # Constraint 3:
     # A customer can choose option (j,k) only if option (j,k) is open.
     for i in I:
@@ -103,7 +104,6 @@ def solve_bbc(
                 y[i, j, k] <= x[j, k],
                 name=f"choose_only_if_open[{i},{j},{k}]",
             )
-
 
     # Constraint 4:
     # If theta_ijk > budget_i, customer i cannot choose option (j,k).
@@ -115,16 +115,15 @@ def solve_bbc(
                     name=f"budget_cut[{i},{j},{k}]",
                 )
 
+    # Paper preprocessing:
+    # If force_open=True, at least one facility must be opened.
+    if force_open:
+        model.addConstr(
+            gp.quicksum(w[j] for j in J) >= 1,
+            name="at_least_one_facility",
+        )
 
-    # BBC preprocessing:
-    # At least one facility is opened to avoid an empty open-option set.
-    model.addConstr(
-        gp.quicksum(w[j] for j in J) >= 1,
-        name="at_least_one_facility",
-    )
-
-
-    # Data needed inside the callback
+    # Data needed inside callback
     model._data = data
     model._I = I
     model._options = options
@@ -133,10 +132,13 @@ def solve_bbc(
     model._surplus = surplus
     model._lazy_cuts_added = 0
 
-
-    # Optimize with BBC callback
     start_time = time.time()
-    model.optimize(_bbc_callback)
+
+    if use_cuts:
+        model.optimize(_bbc_callback)
+    else:
+        model.optimize()
+
     runtime = time.time() - start_time
 
     return _extract_solution(
@@ -146,11 +148,11 @@ def solve_bbc(
         x=x,
         y=y,
         runtime=runtime,
+        use_cuts=use_cuts,
+        force_open=force_open,
     )
 
 
-
-# BBC callback
 def _bbc_callback(model: gp.Model, where: int) -> None:
 
     if where != GRB.Callback.MIPSOL:
@@ -166,7 +168,7 @@ def _bbc_callback(model: gp.Model, where: int) -> None:
     x_val = model.cbGetSolution(x)
     y_val = model.cbGetSolution(y)
 
-    # Find currently opened facility-price options
+    # Currently opened facility-price options
     open_options = [
         (j, k)
         for (j, k) in options
@@ -179,23 +181,35 @@ def _bbc_callback(model: gp.Model, where: int) -> None:
     tolerance = 1e-6
 
     for i in I:
-        best_option = _find_best_customer_option(data, i, open_options)
+        best_options = _find_best_customer_options(
+            data=data,
+            customer=i,
+            open_options=open_options,
+            tolerance=tolerance,
+        )
 
-        # If no open option is affordable, the customer chooses nothing.
-        if best_option is None:
+        # If no open option is affordable, customer chooses nothing.
+        if not best_options:
             best_surplus = 0.0
             rhs_expr = 0.0
         else:
-            best_j, best_k = best_option
-            best_surplus = surplus[i, best_j, best_k]
-            rhs_expr = best_surplus * x[best_j, best_k]
+            best_surplus = max(
+                surplus[i, j, k]
+                for (j, k) in best_options
+            )
+
+            # Full BFC RHS:
+            # sum over all best-response options, not just one option.
+            rhs_expr = gp.quicksum(
+                surplus[i, j, k] * x[j, k]
+                for (j, k) in best_options
+            )
 
         current_surplus = sum(
             surplus[i, j, k] * y_val[i, j, k]
             for (j, k) in options
         )
 
-        # Add lazy cut if the current customer choice is not bilevel feasible.
         if current_surplus + tolerance < best_surplus:
             lhs_expr = gp.quicksum(
                 surplus[i, j, k] * y[i, j, k]
@@ -206,13 +220,12 @@ def _bbc_callback(model: gp.Model, where: int) -> None:
             model._lazy_cuts_added += 1
 
 
-
-# Customer choice in lower-level problem
-def _find_best_customer_option(
+def _find_best_customer_options(
     data: FLMPrData,
     customer: int,
     open_options: List[Tuple[int, int]],
-) -> Tuple[int, int] | None:
+    tolerance: float = 1e-6,
+) -> List[Tuple[int, int]]:
 
     affordable_options = [
         (j, k)
@@ -221,19 +234,23 @@ def _find_best_customer_option(
     ]
 
     if not affordable_options:
-        return None
+        return []
 
-    return min(
-        affordable_options,
-        key=lambda option: (
-            data.theta[customer, option[0], option[1]],
-            -data.price[option[0], option[1]],
-        ),
+    # Customer minimizes theta.
+    best_theta = min(
+        data.theta[customer, j, k]
+        for (j, k) in affordable_options
     )
 
+    best_options = [
+        (j, k)
+        for (j, k) in affordable_options
+        if abs(data.theta[customer, j, k] - best_theta) <= tolerance
+    ]
+
+    return best_options
 
 
-# Extract solution
 def _extract_solution(
     data: FLMPrData,
     model: gp.Model,
@@ -241,21 +258,40 @@ def _extract_solution(
     x,
     y,
     runtime: float,
+    use_cuts: bool,
+    force_open: bool,
 ) -> SolutionDict:
 
+    formulation_name = (
+        "bbc_paper" if use_cuts and force_open
+        else "bbc" if use_cuts
+        else "bbc_no_cuts"
+    )
+
+    lazy_cuts = getattr(model, "_lazy_cuts_added", 0)
+
     result: SolutionDict = {
-        "formulation": "bbc",
+        "formulation": formulation_name,
         "status": model.Status,
         "runtime": runtime,
         "objective": None,
         "mip_gap": None,
-        "lazy_cuts_added": getattr(model, "_lazy_cuts_added", 0),
+        "lazy_cuts_added": lazy_cuts,
         "opened_facilities": [],
         "selected_prices": {},
         "assignments": {},
         "served_demand": 0.0,
+        "served_customers": 0,
         "total_revenue": 0.0,
         "total_opening_cost": 0.0,
+        "node_count": model.NodeCount,
+        "best_bound": model.ObjBound,
+        "num_vars": model.NumVars,
+        "num_constraints": model.NumConstrs,
+        "base_constraints": model.NumConstrs,
+        "effective_constraints": model.NumConstrs + lazy_cuts,
+        "force_open": force_open,
+        "use_cuts": use_cuts,
     }
 
     if model.SolCount == 0:
@@ -285,7 +321,8 @@ def _extract_solution(
         for j in data.facilities:
             for k in data.price_levels[j]:
                 if y[i, j, k].X > 1e-5:
-                    revenue = data.demand[i] * data.price[j, k]
+                    revenue_i = data.demand[i] * data.price[j, k]
+
                     result["assignments"][i] = {
                         "facility": j,
                         "price_level": k,
@@ -294,18 +331,25 @@ def _extract_solution(
                         "theta": data.theta[i, j, k],
                         "budget": data.budget[i],
                         "demand": data.demand[i],
-                        "revenue": revenue,
+                        "revenue": revenue_i,
                     }
+
                     result["served_demand"] += data.demand[i]
-                    result["total_revenue"] += revenue
+                    result["total_revenue"] += revenue_i
+
+    result["served_customers"] = sum(
+        any(
+            y[i, j, k].X > 1e-5
+            for j in data.facilities
+            for k in data.price_levels[j]
+        )
+        for i in data.customers
+    )
 
     return result
 
 
-
-# Print solution
 def print_solution(result: SolutionDict) -> None:
-    """Print a readable solution summary."""
 
     print("\n========== SOLUTION SUMMARY ==========")
     print(f"Formulation: {result['formulation']}")
@@ -313,7 +357,14 @@ def print_solution(result: SolutionDict) -> None:
     print(f"Objective: {result['objective']}")
     print(f"Runtime: {result['runtime']:.4f} seconds")
     print(f"MIP gap: {result['mip_gap']}")
+    print(f"Use cuts: {result['use_cuts']}")
+    print(f"Force open: {result['force_open']}")
     print(f"Lazy cuts added: {result['lazy_cuts_added']}")
+    print(f"Node count: {result['node_count']}")
+    print(f"Best bound: {result['best_bound']}")
+    print(f"Variables: {result['num_vars']}")
+    print(f"Base constraints: {result['base_constraints']}")
+    print(f"Effective constraints: {result['effective_constraints']}")
 
     print("\nOpened facilities:")
     print(result["opened_facilities"])
@@ -336,11 +387,14 @@ def print_solution(result: SolutionDict) -> None:
             print(
                 f"  Customer {i} -> Facility {info['facility']} "
                 f"(level {info['price_level']}, price={info['price']:.2f}, "
-                f"access={info['access_cost']:.2f}, theta={info['theta']:.2f}, "
-                f"budget={info['budget']:.2f}, demand={info['demand']:.2f})"
+                f"access={info['access_cost']:.2f}, "
+                f"theta={info['theta']:.2f}, "
+                f"budget={info['budget']:.2f}, "
+                f"demand={info['demand']:.2f})"
             )
 
     print("\nFinancial summary:")
     print(f"  Total revenue: {result['total_revenue']:.2f}")
     print(f"  Total opening cost: {result['total_opening_cost']:.2f}")
     print(f"  Served demand: {result['served_demand']:.2f}")
+    print(f"  Served customers: {result['served_customers']}")
